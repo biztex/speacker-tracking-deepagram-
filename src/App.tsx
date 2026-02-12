@@ -51,10 +51,10 @@ const AppContent: React.FC = () => {
       <div className="flex flex-col min-h-screen">
         <Header />
 
-        <main className="flex-1 px-3 sm:px-4 pb-6 sm:pb-8 lg:px-8">
-          <div className="mx-auto max-w-4xl space-y-4 sm:space-y-6 lg:space-y-8">
+        <main className="flex-1 px-4 pb-8 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-4xl space-y-6 sm:space-y-8">
             {/* Timer Section */}
-            <section className="flex flex-col items-center py-4 sm:py-6 lg:py-8">
+            <section className="flex flex-col items-center py-6 sm:py-8">
               <SessionTimer time={time} status={status} formatTime={formatTime} />
             </section>
 
@@ -81,11 +81,10 @@ const AppContent: React.FC = () => {
             </section>
 
             {/* Visualization Section */}
-            <section className="pt-2 sm:pt-4">
+            <section className="pt-4">
               <Visualization
                 currentSpeakerId={currentSpeakerId}
                 isActive={isRunning}
-                maxSpeakers={speakerCount}
               />
             </section>
 
@@ -99,7 +98,7 @@ const AppContent: React.FC = () => {
             </section>
 
             {/* Footer */}
-            <footer className="text-center py-4 sm:py-6 text-xs text-[var(--color-text-muted)]">
+            <footer className="text-center py-6 text-xs text-[var(--color-text-muted)]">
               <p>Speaker Tracker v1.0 - Powered by Deepgram API</p>
               <p className="mt-1 opacity-70">
                 Real-time speaker diarization. No audio is recorded or stored.
