@@ -19,6 +19,7 @@ const AppContent: React.FC = () => {
     status,
     speakers,
     currentSpeakerId,
+    audioFeatures,
     error,
     start: startDeepgram,
     stop: stopDeepgram,
@@ -83,6 +84,7 @@ const AppContent: React.FC = () => {
             {/* Visualization Section */}
             <section className="pt-4">
               <Visualization
+                audioFeatures={audioFeatures}
                 currentSpeakerId={currentSpeakerId}
                 isActive={isRunning}
               />

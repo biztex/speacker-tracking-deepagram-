@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { createClient, LiveTranscriptionEvents } from '@deepgram/sdk';
-import type { Speaker, SessionStatus, DeepgramTranscriptResponse } from '../types';
+import type { Speaker, SessionStatus, DeepgramTranscriptResponse, AudioFeatures } from '../types';
 
 interface UseDeepgramProps {
   maxSpeakers: number;
@@ -10,12 +10,16 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
   const [status, setStatus] = useState<SessionStatus>('idle');
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
   const [currentSpeakerId, setCurrentSpeakerId] = useState<number | null>(null);
+  const [audioFeatures, setAudioFeatures] = useState<AudioFeatures | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const deepgramRef = useRef<any>(null);
   const connectionRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   const speakerTimersRef = useRef<Map<number, number>>(new Map());
   const lastSpeakerRef = useRef<number | null>(null);
   const lastSpeechTimeRef = useRef<number>(Date.now());
@@ -40,6 +44,63 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
     );
   }, []);
 
+  // Audio analysis for visualization
+  const analyzeAudio = useCallback(() => {
+    if (!analyserRef.current || status !== 'running') return;
+
+    const analyser = analyserRef.current;
+    const frequencyData = new Uint8Array(analyser.frequencyBinCount);
+    const waveformData = new Uint8Array(analyser.fftSize);
+
+    analyser.getByteFrequencyData(frequencyData);
+    analyser.getByteTimeDomainData(waveformData);
+
+    // Calculate volume (RMS)
+    let sum = 0;
+    for (let i = 0; i < waveformData.length; i++) {
+      const normalized = (waveformData[i] - 128) / 128;
+      sum += normalized * normalized;
+    }
+    const volume = Math.sqrt(sum / waveformData.length);
+
+    // Estimate pitch using autocorrelation
+    const pitch = estimatePitch(waveformData, audioContextRef.current?.sampleRate || 44100);
+
+    setAudioFeatures({
+      volume,
+      pitch,
+      frequencyData: new Uint8Array(frequencyData),
+      waveformData: new Uint8Array(waveformData),
+    });
+
+    animationFrameRef.current = requestAnimationFrame(analyzeAudio);
+  }, [status]);
+
+  // Simple pitch estimation
+  const estimatePitch = (waveformData: Uint8Array, sampleRate: number): number => {
+    const minPeriod = Math.floor(sampleRate / 500);
+    const maxPeriod = Math.floor(sampleRate / 50);
+    
+    let bestCorrelation = 0;
+    let bestPeriod = 0;
+
+    for (let period = minPeriod; period < maxPeriod && period < waveformData.length / 2; period++) {
+      let correlation = 0;
+      for (let i = 0; i < waveformData.length - period; i++) {
+        const val1 = (waveformData[i] - 128) / 128;
+        const val2 = (waveformData[i + period] - 128) / 128;
+        correlation += val1 * val2;
+      }
+      
+      if (correlation > bestCorrelation) {
+        bestCorrelation = correlation;
+        bestPeriod = period;
+      }
+    }
+
+    return bestPeriod > 0 && bestCorrelation > 0.3 ? sampleRate / bestPeriod : 0;
+  };
+
   const start = useCallback(async () => {
     try {
       setError(null);
@@ -61,6 +122,18 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       });
       streamRef.current = stream;
 
+      // Create audio context for visualization
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.8;
+      analyserRef.current = analyser;
+
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+
       // Create Deepgram client
       deepgramRef.current = createClient(apiKey);
 
@@ -80,6 +153,9 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       connection.on(LiveTranscriptionEvents.Open, () => {
         console.log('Deepgram connection opened');
         setStatus('running');
+
+        // Start audio analysis for visualization
+        animationFrameRef.current = requestAnimationFrame(analyzeAudio);
 
         // Create MediaRecorder to send audio
         const mediaRecorder = new MediaRecorder(stream, {
@@ -144,9 +220,15 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       setError(err instanceof Error ? err.message : 'Failed to start session');
       setStatus('idle');
     }
-  }, [maxSpeakers, initializeSpeakers, updateSpeakerTime]);
+  }, [maxSpeakers, initializeSpeakers, updateSpeakerTime, analyzeAudio]);
 
   const stop = useCallback(() => {
+    // Stop animation frame
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
     // Stop media recorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
@@ -158,6 +240,18 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       connectionRef.current = null;
     }
 
+    // Disconnect audio nodes
+    if (analyserRef.current) {
+      analyserRef.current.disconnect();
+      analyserRef.current = null;
+    }
+
+    // Close audio context
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+
     // Stop media stream
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
@@ -165,6 +259,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
     }
 
     setCurrentSpeakerId(null);
+    setAudioFeatures(null);
     setStatus('stopped');
   }, []);
 
@@ -179,8 +274,14 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
       if (connectionRef.current) {
         connectionRef.current.finish();
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
       }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
@@ -206,6 +307,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
     status,
     speakers,
     currentSpeakerId,
+    audioFeatures,
     error,
     start,
     stop,
