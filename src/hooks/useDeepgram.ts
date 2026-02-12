@@ -148,26 +148,34 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       source.connect(analyser);
 
       // Create Deepgram client
+      let deepgramClient;
       try {
-        deepgramRef.current = createClient(apiKey);
+        deepgramClient = createClient(apiKey);
+        deepgramRef.current = deepgramClient;
       } catch (err) {
-        throw new Error('Failed to create Deepgram client. Please check your API key.');
+        console.error('Deepgram client creation error:', err);
+        throw new Error('Failed to create Deepgram client. Please check your API key format.');
       }
 
       // Create live transcription connection with optimized settings
-      const connection = deepgramRef.current.listen.live({
-        model: 'nova-2',
-        language: 'en',
-        smart_format: true,
-        diarize: true,
-        punctuate: true,
-        interim_results: true,
-        utterance_end_ms: 800, // Faster utterance detection
-        vad_events: true, // Enable voice activity detection events
-        endpointing: 200, // Faster endpoint detection (ms)
-      });
-
-      connectionRef.current = connection;
+      let connection;
+      try {
+        connection = deepgramClient.listen.live({
+          model: 'nova-2',
+          language: 'en',
+          smart_format: true,
+          diarize: true,
+          punctuate: true,
+          interim_results: true,
+          utterance_end_ms: 800, // Faster utterance detection
+          vad_events: true, // Enable voice activity detection events
+          endpointing: 200, // Faster endpoint detection (ms)
+        });
+        connectionRef.current = connection;
+      } catch (err) {
+        console.error('Deepgram connection creation error:', err);
+        throw new Error('Failed to create Deepgram connection. Please check your API key and internet connection.');
+      }
 
       // Add connection timeout
       const connectionTimeout = setTimeout(() => {
@@ -179,7 +187,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
 
       // Handle connection open
       connection.on(LiveTranscriptionEvents.Open, () => {
-        console.log('Deepgram connection opened');
+        console.log('Deepgram connection opened successfully');
         clearTimeout(connectionTimeout); // Clear timeout on successful connection
         setStatus('running');
         setError(null); // Clear any previous errors
@@ -188,15 +196,26 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
         animationFrameRef.current = requestAnimationFrame(analyzeAudio);
 
         // Create MediaRecorder to send audio
-        const mediaRecorder = new MediaRecorder(stream, {
-          mimeType: 'audio/webm',
-        });
+        let mediaRecorder;
+        try {
+          mediaRecorder = new MediaRecorder(stream, {
+            mimeType: 'audio/webm',
+          });
+        } catch (err) {
+          console.error('MediaRecorder creation error:', err);
+          setError('Failed to create audio recorder. Your browser may not support audio recording.');
+          return;
+        }
 
         mediaRecorderRef.current = mediaRecorder;
 
         mediaRecorder.addEventListener('dataavailable', (event) => {
           if (event.data.size > 0 && connection.getReadyState() === 1) {
-            connection.send(event.data);
+            try {
+              connection.send(event.data);
+            } catch (err) {
+              console.error('Error sending audio data:', err);
+            }
           }
         });
 
@@ -205,7 +224,13 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
           setError('Microphone error. Please check your microphone and try again.');
         });
 
-        mediaRecorder.start(100); // Send data every 100ms for faster response
+        try {
+          mediaRecorder.start(100); // Send data every 100ms for faster response
+          console.log('MediaRecorder started successfully');
+        } catch (err) {
+          console.error('MediaRecorder start error:', err);
+          setError('Failed to start audio recording. Please refresh and try again.');
+        }
       });
 
       // Handle transcription results
@@ -256,26 +281,36 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
         }
       });
 
-      // Handle errors
+      // Handle errors with detailed logging
       connection.on(LiveTranscriptionEvents.Error, (err: any) => {
-        console.error('Deepgram error:', err);
+        console.error('Deepgram error details:', {
+          error: err,
+          message: err?.message,
+          type: err?.type,
+          code: err?.code,
+          status: err?.status
+        });
         
         // Provide specific error messages
         let errorMessage = 'Connection error occurred';
         
-        if (err.message) {
-          if (err.message.includes('401') || err.message.includes('authentication')) {
+        if (err) {
+          const errMsg = err.message || err.error || err.toString();
+          
+          if (errMsg.includes('401') || errMsg.includes('authentication') || errMsg.includes('Unauthorized')) {
             errorMessage = 'Invalid API key. Please check your VITE_DEEPGRAM_API_KEY in .env file';
-          } else if (err.message.includes('403')) {
+          } else if (errMsg.includes('403') || errMsg.includes('Forbidden')) {
             errorMessage = 'API key does not have permission for live transcription';
-          } else if (err.message.includes('429')) {
+          } else if (errMsg.includes('429') || errMsg.includes('rate limit')) {
             errorMessage = 'Rate limit exceeded. Please wait a moment and try again';
-          } else if (err.message.includes('network') || err.message.includes('ECONNREFUSED')) {
+          } else if (errMsg.includes('network') || errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND')) {
             errorMessage = 'Network error. Please check your internet connection';
-          } else if (err.message.includes('timeout')) {
+          } else if (errMsg.includes('timeout')) {
             errorMessage = 'Connection timeout. Please check your internet connection';
+          } else if (errMsg.includes('Failed to call API')) {
+            errorMessage = 'Failed to connect to Deepgram API. Please check your API key and internet connection';
           } else {
-            errorMessage = `Connection error: ${err.message}`;
+            errorMessage = `Connection error: ${errMsg}`;
           }
         }
         
