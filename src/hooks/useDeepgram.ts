@@ -199,8 +199,6 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
               const speakerId = word.speaker + 1; // Deepgram uses 0-based indexing
               
               if (speakerId <= maxSpeakers) {
-                const wordDuration = ((word.end - word.start) * 1000); // Convert to ms
-                
                 // Immediately update current speaker (don't wait for speech_final)
                 if (lastSpeakerRef.current !== speakerId) {
                   // Speaker changed - finalize previous speaker's time
