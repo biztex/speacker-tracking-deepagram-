@@ -116,6 +116,10 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
         throw new Error('Deepgram API key not found. Please add VITE_DEEPGRAM_API_KEY to your .env file');
       }
 
+      if (apiKey === 'your_deepgram_api_key_here') {
+        throw new Error('Please replace the placeholder API key with your actual Deepgram API key in the .env file');
+      }
+
       // Initialize speakers
       initializeSpeakers();
 
@@ -144,7 +148,11 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       source.connect(analyser);
 
       // Create Deepgram client
-      deepgramRef.current = createClient(apiKey);
+      try {
+        deepgramRef.current = createClient(apiKey);
+      } catch (err) {
+        throw new Error('Failed to create Deepgram client. Please check your API key.');
+      }
 
       // Create live transcription connection with optimized settings
       const connection = deepgramRef.current.listen.live({
@@ -161,10 +169,20 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
 
       connectionRef.current = connection;
 
+      // Add connection timeout
+      const connectionTimeout = setTimeout(() => {
+        if (status !== 'running') {
+          setError('Connection timeout. Please check your internet connection and API key.');
+          stop();
+        }
+      }, 10000); // 10 second timeout
+
       // Handle connection open
       connection.on(LiveTranscriptionEvents.Open, () => {
         console.log('Deepgram connection opened');
+        clearTimeout(connectionTimeout); // Clear timeout on successful connection
         setStatus('running');
+        setError(null); // Clear any previous errors
 
         // Start audio analysis for visualization
         animationFrameRef.current = requestAnimationFrame(analyzeAudio);
@@ -180,6 +198,11 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
           if (event.data.size > 0 && connection.getReadyState() === 1) {
             connection.send(event.data);
           }
+        });
+
+        mediaRecorder.addEventListener('error', (event: any) => {
+          console.error('MediaRecorder error:', event);
+          setError('Microphone error. Please check your microphone and try again.');
         });
 
         mediaRecorder.start(100); // Send data every 100ms for faster response
@@ -236,17 +259,63 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       // Handle errors
       connection.on(LiveTranscriptionEvents.Error, (err: any) => {
         console.error('Deepgram error:', err);
-        setError('Connection error occurred');
+        
+        // Provide specific error messages
+        let errorMessage = 'Connection error occurred';
+        
+        if (err.message) {
+          if (err.message.includes('401') || err.message.includes('authentication')) {
+            errorMessage = 'Invalid API key. Please check your VITE_DEEPGRAM_API_KEY in .env file';
+          } else if (err.message.includes('403')) {
+            errorMessage = 'API key does not have permission for live transcription';
+          } else if (err.message.includes('429')) {
+            errorMessage = 'Rate limit exceeded. Please wait a moment and try again';
+          } else if (err.message.includes('network') || err.message.includes('ECONNREFUSED')) {
+            errorMessage = 'Network error. Please check your internet connection';
+          } else if (err.message.includes('timeout')) {
+            errorMessage = 'Connection timeout. Please check your internet connection';
+          } else {
+            errorMessage = `Connection error: ${err.message}`;
+          }
+        }
+        
+        setError(errorMessage);
       });
 
       // Handle connection close
-      connection.on(LiveTranscriptionEvents.Close, () => {
-        console.log('Deepgram connection closed');
+      connection.on(LiveTranscriptionEvents.Close, (event: any) => {
+        console.log('Deepgram connection closed', event);
+        
+        // Only show error if connection closed unexpectedly
+        if (status === 'running') {
+          setError('Connection closed unexpectedly. Please try again.');
+          setStatus('stopped');
+        }
       });
 
     } catch (err) {
       console.error('Failed to start:', err);
-      setError(err instanceof Error ? err.message : 'Failed to start session');
+      
+      // Provide specific error messages
+      let errorMessage = 'Failed to start session';
+      
+      if (err instanceof Error) {
+        if (err.message.includes('API key')) {
+          errorMessage = err.message;
+        } else if (err.message.includes('getUserMedia') || err.message.includes('microphone')) {
+          errorMessage = 'Microphone access denied. Please allow microphone access and try again.';
+        } else if (err.message.includes('NotFoundError')) {
+          errorMessage = 'No microphone found. Please connect a microphone and try again.';
+        } else if (err.message.includes('NotAllowedError')) {
+          errorMessage = 'Microphone permission denied. Please allow microphone access in your browser settings.';
+        } else if (err.message.includes('NotReadableError')) {
+          errorMessage = 'Microphone is already in use by another application.';
+        } else {
+          errorMessage = err.message;
+        }
+      }
+      
+      setError(errorMessage);
       setStatus('idle');
     }
   }, [maxSpeakers, initializeSpeakers, updateSpeakerTime, analyzeAudio]);
