@@ -52,11 +52,14 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       // Initialize speakers
       initializeSpeakers();
 
-      // Get microphone access
+      // Get microphone access with optimal settings for speech
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           channelCount: 1,
-          sampleRate: 16000,
+          sampleRate: 48000, // Higher sample rate for better accuracy
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
         } 
       });
       streamRef.current = stream;
@@ -64,14 +67,18 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       // Create Deepgram client
       deepgramRef.current = createClient(apiKey);
 
-      // Create live transcription connection
+      // Create live transcription connection with enhanced accuracy settings
       const connection = deepgramRef.current.listen.live({
         model: 'nova-2',
         language: 'en',
         smart_format: true,
         diarize: true,
+        diarize_version: '2024-01-18', // Latest diarization model
         punctuate: true,
         interim_results: true,
+        utterance_end_ms: 1000, // Detect end of utterance after 1 second
+        vad_events: true, // Voice activity detection events
+        endpointing: 300, // More responsive endpoint detection
       });
 
       connectionRef.current = connection;
@@ -94,7 +101,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
           }
         });
 
-        mediaRecorder.start(250); // Send data every 250ms
+        mediaRecorder.start(100); // Send data every 100ms for better real-time response
       });
 
       // Handle transcription results
@@ -116,8 +123,8 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
                 // Update speaker time
                 updateSpeakerTime(speakerId, wordDuration);
                 
-                // Update current speaker
-                if (data.speech_final) {
+                // Update current speaker - use speech_final for more accurate detection
+                if (data.speech_final || data.is_final) {
                   setCurrentSpeakerId(speakerId);
                   lastSpeakerRef.current = speakerId;
                   lastSpeechTimeRef.current = now;
