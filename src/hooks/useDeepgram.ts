@@ -23,6 +23,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
   const speakerTimersRef = useRef<Map<number, number>>(new Map());
   const lastSpeakerRef = useRef<number | null>(null);
   const lastSpeechTimeRef = useRef<number>(Date.now());
+  const speakerStartTimeRef = useRef<Map<number, number>>(new Map());
 
   const initializeSpeakers = useCallback(() => {
     const initialSpeakers: Speaker[] = Array.from({ length: maxSpeakers }, (_, i) => ({
@@ -55,15 +56,16 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
     analyser.getByteFrequencyData(frequencyData);
     analyser.getByteTimeDomainData(waveformData);
 
-    // Calculate volume (RMS)
+    // Calculate volume (RMS) - optimized
     let sum = 0;
-    for (let i = 0; i < waveformData.length; i++) {
+    const step = 4; // Sample every 4th value for performance
+    for (let i = 0; i < waveformData.length; i += step) {
       const normalized = (waveformData[i] - 128) / 128;
       sum += normalized * normalized;
     }
-    const volume = Math.sqrt(sum / waveformData.length);
+    const volume = Math.sqrt(sum / (waveformData.length / step));
 
-    // Estimate pitch using autocorrelation
+    // Estimate pitch using autocorrelation - optimized
     const pitch = estimatePitch(waveformData, audioContextRef.current?.sampleRate || 44100);
 
     setAudioFeatures({
@@ -76,7 +78,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
     animationFrameRef.current = requestAnimationFrame(analyzeAudio);
   }, [status]);
 
-  // Simple pitch estimation
+  // Optimized pitch estimation
   const estimatePitch = (waveformData: Uint8Array, sampleRate: number): number => {
     const minPeriod = Math.floor(sampleRate / 500);
     const maxPeriod = Math.floor(sampleRate / 50);
@@ -84,9 +86,13 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
     let bestCorrelation = 0;
     let bestPeriod = 0;
 
-    for (let period = minPeriod; period < maxPeriod && period < waveformData.length / 2; period++) {
+    // Optimize by checking fewer periods
+    const step = 2;
+    for (let period = minPeriod; period < maxPeriod && period < waveformData.length / 2; period += step) {
       let correlation = 0;
-      for (let i = 0; i < waveformData.length - period; i++) {
+      const checkLength = Math.min(waveformData.length - period, 512); // Limit check length
+      
+      for (let i = 0; i < checkLength; i += 2) { // Sample every other value
         const val1 = (waveformData[i] - 128) / 128;
         const val2 = (waveformData[i + period] - 128) / 128;
         correlation += val1 * val2;
@@ -98,7 +104,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       }
     }
 
-    return bestPeriod > 0 && bestCorrelation > 0.3 ? sampleRate / bestPeriod : 0;
+    return bestPeriod > 0 && bestCorrelation > 0.2 ? sampleRate / bestPeriod : 0;
   };
 
   const start = useCallback(async () => {
@@ -113,11 +119,14 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       // Initialize speakers
       initializeSpeakers();
 
-      // Get microphone access
+      // Get microphone access with optimized settings
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           channelCount: 1,
           sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false, // Disable for faster response
         } 
       });
       streamRef.current = stream;
@@ -128,7 +137,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
 
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.8;
+      analyser.smoothingTimeConstant = 0.5; // Reduced for faster response
       analyserRef.current = analyser;
 
       const source = audioContext.createMediaStreamSource(stream);
@@ -137,7 +146,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
       // Create Deepgram client
       deepgramRef.current = createClient(apiKey);
 
-      // Create live transcription connection
+      // Create live transcription connection with optimized settings
       const connection = deepgramRef.current.listen.live({
         model: 'nova-2',
         language: 'en',
@@ -145,6 +154,9 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
         diarize: true,
         punctuate: true,
         interim_results: true,
+        utterance_end_ms: 800, // Faster utterance detection
+        vad_events: true, // Enable voice activity detection events
+        endpointing: 200, // Faster endpoint detection (ms)
       });
 
       connectionRef.current = connection;
@@ -170,7 +182,7 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
           }
         });
 
-        mediaRecorder.start(250); // Send data every 250ms
+        mediaRecorder.start(100); // Send data every 100ms for faster response
       });
 
       // Handle transcription results
@@ -179,28 +191,47 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
         
         if (transcript && transcript.words && transcript.words.length > 0) {
           const words = transcript.words;
+          const now = Date.now();
           
-          // Process each word with speaker information
+          // Process words for speaker detection
           words.forEach((word) => {
             if (word.speaker !== undefined) {
               const speakerId = word.speaker + 1; // Deepgram uses 0-based indexing
               
               if (speakerId <= maxSpeakers) {
-                const now = Date.now();
                 const wordDuration = ((word.end - word.start) * 1000); // Convert to ms
                 
-                // Update speaker time
-                updateSpeakerTime(speakerId, wordDuration);
-                
-                // Update current speaker
-                if (data.speech_final) {
+                // Immediately update current speaker (don't wait for speech_final)
+                if (lastSpeakerRef.current !== speakerId) {
+                  // Speaker changed - finalize previous speaker's time
+                  if (lastSpeakerRef.current !== null && speakerStartTimeRef.current.has(lastSpeakerRef.current)) {
+                    const startTime = speakerStartTimeRef.current.get(lastSpeakerRef.current)!;
+                    const elapsed = now - startTime;
+                    updateSpeakerTime(lastSpeakerRef.current, elapsed);
+                  }
+                  
+                  // Start timing new speaker
+                  speakerStartTimeRef.current.set(speakerId, now);
                   setCurrentSpeakerId(speakerId);
                   lastSpeakerRef.current = speakerId;
+                  lastSpeechTimeRef.current = now;
+                } else {
+                  // Same speaker continuing - just update time reference
                   lastSpeechTimeRef.current = now;
                 }
               }
             }
           });
+          
+          // On speech_final, finalize the current speaker's segment
+          if (data.speech_final && lastSpeakerRef.current !== null) {
+            if (speakerStartTimeRef.current.has(lastSpeakerRef.current)) {
+              const startTime = speakerStartTimeRef.current.get(lastSpeakerRef.current)!;
+              const elapsed = now - startTime;
+              updateSpeakerTime(lastSpeakerRef.current, elapsed);
+              speakerStartTimeRef.current.delete(lastSpeakerRef.current);
+            }
+          }
         }
       });
 
@@ -267,8 +298,10 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
     stop();
     initializeSpeakers();
     setCurrentSpeakerId(null);
+    setAudioFeatures(null);
     setError(null);
     setStatus('idle');
+    speakerStartTimeRef.current.clear();
   }, [stop, initializeSpeakers]);
 
   // Cleanup on unmount
@@ -295,13 +328,20 @@ export const useDeepgram = ({ maxSpeakers }: UseDeepgramProps) => {
 
     const interval = setInterval(() => {
       const now = Date.now();
-      if (currentSpeakerId !== null && now - lastSpeechTimeRef.current > 1500) {
+      if (currentSpeakerId !== null && now - lastSpeechTimeRef.current > 800) {
+        // Finalize current speaker's time before clearing
+        if (speakerStartTimeRef.current.has(currentSpeakerId)) {
+          const startTime = speakerStartTimeRef.current.get(currentSpeakerId)!;
+          const elapsed = now - startTime;
+          updateSpeakerTime(currentSpeakerId, elapsed);
+          speakerStartTimeRef.current.delete(currentSpeakerId);
+        }
         setCurrentSpeakerId(null);
       }
-    }, 500);
+    }, 200); // Check more frequently
 
     return () => clearInterval(interval);
-  }, [status, currentSpeakerId]);
+  }, [status, currentSpeakerId, updateSpeakerTime]);
 
   return {
     status,

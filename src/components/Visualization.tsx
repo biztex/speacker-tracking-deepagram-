@@ -75,14 +75,16 @@ export const Visualization: React.FC<VisualizationProps> = ({
 
     ctx.beginPath();
 
-    for (let i = 0; i < data.length; i++) {
+    // Downsample for performance while maintaining visual quality
+    const downsampleFactor = Math.max(1, Math.floor(data.length / 200));
+    for (let i = 0; i < data.length; i += downsampleFactor) {
       const v = data[i] / 255;
       const y = (1 - v) * height;
       
       if (i === 0) {
         ctx.moveTo(0, y);
       } else {
-        ctx.lineTo(i * sliceWidth, y);
+        ctx.lineTo((i / downsampleFactor) * sliceWidth * downsampleFactor, y);
       }
     }
 
